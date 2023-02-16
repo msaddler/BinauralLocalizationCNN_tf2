@@ -1,0 +1,64 @@
+{
+    "kwargs_cochlea": {
+        "config_filterbank": {
+            "max_hi": 20000.0,
+            "min_lo": 30.0,
+            "mode": "half_cosine_filterbank",
+            "num_cf": 39
+        },
+        "config_subband_processing": {
+            "power_compression": 0.3,
+            "rectify": true
+        },
+        "kwargs_nnresample_poly_filter_input": {},
+        "kwargs_nnresample_poly_filter_output": {
+            "down": 6,
+            "up": 1,
+            "window_length": 4097
+        },
+        "sr_cochlea": 48000,
+        "sr_input": 48000,
+        "sr_output": 8000
+    },
+    "kwargs_dataset_from_tfrecords": {
+        "buffer_size_prefetch": 5,
+        "buffer_size_shuffle": 100,
+        "bytes_description": "config_bytes_description.pckl",
+        "feature_description": "config_feature_description.pckl",
+        "features_to_exclude": [
+            "nervegram_meanrates"
+        ]
+    },
+    "kwargs_optimize": {
+        "basename_ckpt_best": "ckpt_BEST",
+        "basename_ckpt_epoch": null,
+        "basename_log": "log_optimize.csv",
+        "batch_size": 16,
+        "early_stopping_baseline": null,
+        "early_stopping_min_delta": 0,
+        "early_stopping_patience": null,
+        "epochs": 50,
+        "key_inputs": "signal",
+        "key_outputs": "label_loc_int",
+        "kwargs_loss": {
+            "from_logits": true,
+            "name": "SparseCategoricalCrossentropy",
+            "weight": 1.0
+        },
+        "kwargs_optimizer": {
+            "amsgrad": false,
+            "beta_1": 0.9,
+            "beta_2": 0.999,
+            "epsilon": 1e-07,
+            "learning_rate": 0.001,
+            "name": "Adam"
+        },
+        "monitor_metric": "val_accuracy",
+        "monitor_mode": "max",
+        "steps_per_epoch": 10000,
+        "validation_steps": 500
+    },
+    "n_classes_dict": {
+        "label_loc_int": 504
+    }
+}

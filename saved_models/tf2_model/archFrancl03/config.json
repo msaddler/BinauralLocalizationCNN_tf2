@@ -13,6 +13,7 @@
         "kwargs_nnresample_poly_filter_input": {},
         "kwargs_nnresample_poly_filter_output": {
             "down": 6,
+            "legacy": true,
             "up": 1,
             "window_length": 4097
         },

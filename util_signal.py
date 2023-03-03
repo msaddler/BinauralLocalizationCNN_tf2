@@ -633,7 +633,7 @@ def half_cosine_filterbank(x,
     return y, container
 
 
-def nnresample_poly_filter(up, down, beta=5.0, window_length=16001, nnshift=True):
+def nnresample_poly_filter(up, down, beta=5.0, window_length=16001, nnshift=True, legacy=False):
     """
     Builds an anti-aliasing lowpass filter with cutoff approximately equal
     to (1/2) * INITIAL_SAMPLING_RATE * up / down.
@@ -647,6 +647,8 @@ def nnresample_poly_filter(up, down, beta=5.0, window_length=16001, nnshift=True
     beta (float): Kaiser window shape parameter
     window_length (int): finite impulse response window length
     nnshift (bool): shift anti-aliasing filter cutoff to move null-on-Nyquist
+    legacy (bool): construct lowpass filter from sinc function + kaiser window
+    
     Returns
     -------
     shifted_filt (np.array of shape [window_length]): filter impulse response
@@ -657,6 +659,13 @@ def nnresample_poly_filter(up, down, beta=5.0, window_length=16001, nnshift=True
     greatest_common_divisor = np.gcd(up, down)
     up = up // greatest_common_divisor
     down = down // greatest_common_divisor
+    if legacy:
+        # Construct lowpass-filter with sinc function and kaiser window
+        # (Copied implementation from afrancl/BinauralLocalizationCNN)
+        t = np.arange(-window_length / 2, int(window_length / 2))
+        filt = np.sinc(t * (up / down)) * (up / down)
+        window = scipy.signal.windows.kaiser(window_length, beta=beta)
+        return window * filt
     max_rate = np.max([up, down])
     sfact = np.sqrt(1 + (beta / np.pi) ** 2)
     # Generate first filter attempt (6dB attenuation at f_c).

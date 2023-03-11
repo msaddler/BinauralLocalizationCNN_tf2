@@ -8,105 +8,12 @@ import pdb
 import numpy as np
 
 
-def channelwise_dropout(example):
-    """
-    """
-    tmp = tf.constant([
-            [[[1, 1, 1]]],
-            [[[1, 0, 0]]],
-            [[[0, 1, 0]]],
-            [[[0, 0, 1]]],
-            [[[1, 1, 0]]],
-            [[[1, 0, 1]]],
-            [[[0, 1, 1]]],
-        ],
-        dtype=example['nervegram_meanrates'].dtype)
-    idx = tf.random.uniform(
-        shape=(),
-        minval=0,
-        maxval=tmp.shape[0],
-        dtype=tf.dtypes.int32,
-        seed=None,
-        name=None)
-    example['nervegram_meanrates'] = example['nervegram_meanrates'] * tmp[idx]
-    return example
-
-
-def channelwise_manipulation(example, channels=[], mode='shuffle'):
-    """
-    """
-    nervegram = example['nervegram_meanrates']
-    if mode == 'shuffle':
-        list_sub_nervegram = tf.unstack(
-            nervegram,
-            nervegram.shape[-1],
-            axis=-1)
-        for channel in channels:
-            tmp = list_sub_nervegram[channel]
-            tmp = tf.reshape(
-                tf.random.shuffle(
-                    tf.reshape(tmp, [-1])),
-                tmp.shape)
-            list_sub_nervegram[channel] = tmp
-        nervegram = tf.stack(list_sub_nervegram, axis=-1)
-    elif mode == 'silence':
-        mask = np.ones(nervegram.shape[-1])
-        mask[channels] = 0
-        mask = mask[np.newaxis, np.newaxis, :]
-        nervegram = nervegram * mask
-    elif mode == 'substitute':
-        list_sub_nervegram = tf.unstack(
-            nervegram,
-            nervegram.shape[-1],
-            axis=-1)
-        assert len(channels) == len(list_sub_nervegram)
-        list_sub_nervegram = [list_sub_nervegram[_] for _ in channels]
-        nervegram = tf.stack(list_sub_nervegram, axis=-1)
-    else:
-        raise ValueError("`channelwise_manipulation` did not recognize mode={}".format(mode))
-    example['nervegram_meanrates'] = nervegram
-    return example
-
-
-def flatten_excitation_pattern(example):
-    '''
-    Helper function flattens excitation pattern by dividing nervegram
-    by time-averaged firing rates and multiplying by frequency- and time-
-    averaged firing rates. Frequency is axis 0; time is axis 1.
-    '''
-    nervegram = tf.cast(example['nervegram_meanrates'], tf.float32)
-    nervegram_exc = tf.math.reduce_mean(nervegram, axis=1, keepdims=True)
-    nervegram = tf.math.multiply(
-        tf.math.divide_no_nan(nervegram, nervegram_exc),
-        tf.math.reduce_mean(nervegram, axis=[0, 1], keepdims=True))
-    example['nervegram_meanrates'] = tf.cast(nervegram, example['nervegram_meanrates'].dtype)
-    return example
-
-
-def resize_freq_axis(nervegram, n_freq=400):
-    """
-    Linearly interpolate `nervegram` frequency axis to
-    have `n_freq` rows. `nervegram` must have shape
-    [freq, time, channel] or [batch, freq, time, channel].
-    """
-    nervegram = tf.image.resize(
-        nervegram,
-        size=[
-            n_freq,
-            nervegram.shape[-2]
-        ],
-        method='bilinear',
-        preserve_aspect_ratio=False,
-        antialias=False,
-        name='resize_freq_axis')
-    return nervegram
-
-
 def prepare_localization_example(example, signal_slice_length=40000):
     """
     Helper function prepares examples loaded from sound localization
     tfrecord datasets by computing a sound location integer label and
-    taking a random 1-second excerpt from `nervegram_meanrates`.
+    taking a random excerpt of the signal (signal_slice_length
+    specifies the slice length in samples).
     """
     # Francl localization label convention (labels 0-71 correspond to elevation = 0)
     example['label_loc_int'] = tf.cast(
@@ -116,49 +23,20 @@ def prepare_localization_example(example, signal_slice_length=40000):
         ),
         tf.int64
     )
-    if 'nervegram_meanrates' in example:
-        # Randomly slice 1-second excerpt of nervegram
-        example['nervegram_meanrates'] = util_cochlea.random_slice(
-            example['nervegram_meanrates'],
-            slice_length=10000,
-            axis=1, # Time axis
-            buffer=None)
     if 'signal' in example:
+        # Resample signal from 44100 Hz to 40000 Hz on the CPU
         example['signal'] = util_signal.tf_scipy_signal_resample_poly(
             example['signal'],
             up=40000,
             down=44100,
             axis=-2)
         if signal_slice_length is not None:
+            # Take a random excerpt of specified length from the signal
             example['signal'] = util_cochlea.random_slice(
                 example['signal'],
                 slice_length=signal_slice_length,
                 axis=-2, # Time axis
                 buffer=None)
-    return example
-
-
-def prepare_pitchnet_example(example):
-    """
-    Slice 150ms waveform to 75ms waveform (4800 --> 2400 samples)
-    """
-    if 'signal' in example:
-        if example['signal'].shape[0] >= 2160+2400:
-            example['signal'] = example['signal'][2160:2160+2400]
-    return example
-
-
-def prepare_timit_example(example):
-    """
-    Resample waveform from 16kHz to 20kHz
-    """
-    if 'signal' in example:
-        if example['signal'].shape[-1] == 32000:
-            example['signal'] = util_signal.tf_scipy_signal_resample_poly(
-                example['signal'],
-                up=20000,
-                down=16000,
-                axis=-1)
     return example
 
 
@@ -205,27 +83,11 @@ if __name__ == "__main__":
     kwargs_dataset_from_tfrecords = CONFIG.get('kwargs_dataset_from_tfrecords', {})
     kwargs_dataset_from_tfrecords['map_function'] = []
     if ('label_loc_int' in n_classes_dict):
-        if 'cochlearn' in args.dir_model.lower():
-            kwargs_dataset_from_tfrecords['map_function'].append(
-                lambda _: prepare_localization_example(_, signal_slice_length=41000))
-        else:
-            kwargs_dataset_from_tfrecords['map_function'].append(
-                lambda _: prepare_localization_example(_, signal_slice_length=48000))
-    if ('f0_label' in n_classes_dict) and ('cochlearn' in args.dir_model.lower()):
-        kwargs_dataset_from_tfrecords['map_function'].append(prepare_pitchnet_example)
-    n_freq = None
-    if 'nfreq' in args.dir_model:
-        tmp = args.dir_model[args.dir_model.rfind('nfreq'):].split('_')[0]
-        n_freq = int(''.join(_ for _ in tmp if _.isdigit()))
-        BATCH_SCALE_FACTOR = 1
-        CONFIG['kwargs_optimize']['batch_size'] = CONFIG['kwargs_optimize']['batch_size'] // BATCH_SCALE_FACTOR
-        CONFIG['kwargs_optimize']['steps_per_epoch'] = CONFIG['kwargs_optimize']['steps_per_epoch'] * BATCH_SCALE_FACTOR
-        CONFIG['kwargs_optimize']['validation_steps'] = CONFIG['kwargs_optimize']['validation_steps'] * BATCH_SCALE_FACTOR
-        CONFIG['kwargs_optimize']['basename_ckpt_epoch'] = 'ckpt_{epoch:04d}'
-    if ('channelwise_dropout' in args.dir_model) and (args.tfrecords_eval is None):
-        kwargs_dataset_from_tfrecords['map_function'].append(channelwise_dropout)
-        print('\n\nIncorporating channelwise_dropout during training\n\n')
-    # Set parameters for mixed precision model
+        # If model output corresponds to localization task, add the
+        # `prepare_localization_example` function to input pipeline
+        map_function = lambda _: prepare_localization_example(_, signal_slice_length=48000)
+        kwargs_dataset_from_tfrecords['map_function'].append(map_function)
+    # Set parameters for mixed precision model (use float16 to reduce memory footprint of activations)
     if args.mixed_precision:
         policy = tf.keras.mixed_precision.Policy('mixed_float16')
         tf.keras.mixed_precision.set_global_policy(policy)
@@ -236,17 +98,16 @@ if __name__ == "__main__":
     # Define model_io_function
     def model_io_function(x):
         y = x
-        if n_freq is not None:
-            y = resize_freq_axis(y, n_freq=n_freq)
-            print('[model_io_function] resize_freq_axis(nervegram, n_freq={})'.format(n_freq))
         if CONFIG.get('kwargs_cochlea', {}):
-            if 'label_loc_int' in n_classes_dict:
+            if ('label_loc_int' in n_classes_dict):
+                # If model output corresponds to localization task, build separate cochlea for each ear
                 msg = "expected [batch, freq, time, spont, channel=2] or [batch, time, channel=2]"
                 assert (len(y.shape) in [3, 5]) and (y.shape[-1] == 2), msg
                 y0, _ = util_cochlea.cochlea(y[..., 0], **copy.deepcopy(CONFIG['kwargs_cochlea']))
                 y1, _ = util_cochlea.cochlea(y[..., 1], **copy.deepcopy(CONFIG['kwargs_cochlea']))
                 y = tf.concat([y0, y1], axis=-1)
             else:
+                # Otherwise, build single cochlea for single-channel input
                 y, _ = util_cochlea.cochlea(y, **copy.deepcopy(CONFIG['kwargs_cochlea']))
         y, _ = util_network.build_network(y, list_layer_dict, n_classes_dict=n_classes_dict)
         return y
@@ -259,36 +120,8 @@ if __name__ == "__main__":
         print('[:: MODEL DIRECTORY ::] {}'.format(args.dir_model))
         print('[:: FILENAME CONFIG ::] {}'.format(fn_config))
         print('[:: FILENAME ARCH   ::] {}'.format(fn_arch))
-        print('[:: TFRECORDS EVAL  ::] {} ({} files)'.format(
-            args.tfrecords_eval, len(glob.glob(args.tfrecords_eval))))
+        print('[:: TFRECORDS EVAL  ::] {} ({} files)'.format(args.tfrecords_eval, len(glob.glob(args.tfrecords_eval))))
         print('[:::::::::::::::::::::]')
-        if '_spont' in args.basename_eval:
-            channels = []
-            spont_tag = args.basename_eval[args.basename_eval.rfind('spont'):args.basename_eval.rfind('.json')]
-            if 'H' in spont_tag:
-                channels.append(0)
-            if 'M' in spont_tag:
-                channels.append(1)
-            if 'L' in spont_tag:
-                channels.append(2)
-            if 'shuffle_spont' in args.basename_eval:
-                mode = 'shuffle'
-            if 'silence_spont' in args.basename_eval:
-                mode = 'silence'
-            if 'substitute_spont' in args.basename_eval:
-                mode = 'substitute'
-            map_function = lambda _: channelwise_manipulation(_, channels=channels, mode=mode)
-            kwargs_dataset_from_tfrecords['map_function'].insert(0, map_function)
-            print('{} --> set `map_function` as channelwise_manipulation(example, channels={}, mode={})'.format(
-                spont_tag,
-                channels,
-                mode))
-        if ('flat_exc' in args.basename_eval):
-            kwargs_dataset_from_tfrecords['map_function'].append(flatten_excitation_pattern)
-            print('{} --> set `map_function` as flatten_excitation_pattern(example)'.format(args.basename_eval))
-        if ('timit' in args.tfrecords_eval):
-            kwargs_dataset_from_tfrecords['map_function'].append(prepare_timit_example)
-            print('\n\nResampling TIMIT waveforms from 16kHz to 20kHz\n\n')
         util_evaluate.evaluate(
             tfrecords=args.tfrecords_eval,
             dataset=None,
@@ -312,10 +145,8 @@ if __name__ == "__main__":
         print('[:: MODEL DIRECTORY ::] {}'.format(args.dir_model))
         print('[:: FILENAME CONFIG ::] {}'.format(fn_config))
         print('[:: FILENAME ARCH   ::] {}'.format(fn_arch))
-        print('[:: TFRECORDS TRAIN ::] {} ({} files)'.format(
-            args.tfrecords_train, len(glob.glob(args.tfrecords_train))))
-        print('[:: TFRECORDS VALID ::] {} ({} files)'.format(
-            args.tfrecords_valid, len(glob.glob(args.tfrecords_valid))))
+        print('[:: TFRECORDS TRAIN ::] {} ({} files)'.format(args.tfrecords_train, len(glob.glob(args.tfrecords_train))))
+        print('[:: TFRECORDS VALID ::] {} ({} files)'.format(args.tfrecords_valid, len(glob.glob(args.tfrecords_valid))))
         print('[:::::::::::::::::::::]')
         list_gpu = tf.config.list_physical_devices(device_type='GPU')
         strategy = tf.distribute.MirroredStrategy()

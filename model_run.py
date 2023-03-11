@@ -95,6 +95,7 @@ if __name__ == "__main__":
             policy.compute_dtype, policy.variable_dtype))
         if 'fc_top' in list_layer_dict[-1]['layer_type']:
             list_layer_dict[-1]['args']['dtype'] = 'float32'
+    
     # Define model_io_function
     def model_io_function(x):
         y = x
@@ -105,7 +106,11 @@ if __name__ == "__main__":
                 assert (len(y.shape) in [3, 5]) and (y.shape[-1] == 2), msg
                 y0, _ = util_cochlea.cochlea(y[..., 0], **copy.deepcopy(CONFIG['kwargs_cochlea']))
                 y1, _ = util_cochlea.cochlea(y[..., 1], **copy.deepcopy(CONFIG['kwargs_cochlea']))
-                y = tf.concat([y0, y1], axis=-1)
+                if len(y0.shape) < 4:
+                    # Ensure each cochlear model output has a channel dimension before concatenating
+                    y0 = y0[..., tf.newaxis]
+                    y1 = y1[..., tf.newaxis]
+                y = tf.concat([y0, y1], axis=3) # Concatenate along channel dimension
             else:
                 # Otherwise, build single cochlea for single-channel input
                 y, _ = util_cochlea.cochlea(y, **copy.deepcopy(CONFIG['kwargs_cochlea']))

@@ -452,7 +452,6 @@ def make_roex_filters(signal_length,
             print(msg.format(cf))
     # Multiply the filterbank by a ramp to eliminate gain at DC component
     if dc_ramp_cutoff > 0:
-        print("Including ramp below {}Hz to eliminate DC offset in roex filterbank".format(dc_ramp_cutoff))
         dc_ramp = np.ones([1, freqs.shape[0]])
         dc_ramp[:, freqs < dc_ramp_cutoff] = freqs[freqs < dc_ramp_cutoff] / dc_ramp_cutoff
         filts = filts * dc_ramp
@@ -474,7 +473,7 @@ def roex_filterbank(x,
     # Prepare list of CFs (default is spaced linearly on an ERB scale)
     if cfs is None:
         assert max_cf <= sr/2, "max_cf must be below Nyquist frequency"
-        assert min_cf < max_cf, "min_cf must be below max_cf?"
+        assert min_cf <= max_cf, "min_cf cannot be greater than max_cf"
         cfs = erbspace(min_cf, max_cf, num_cf)
     else:
         cfs = np.array(cfs)
@@ -633,75 +632,62 @@ def half_cosine_filterbank(x,
     return y, container
 
 
-def nnresample_poly_filter(up, down, beta=5.0, window_length=16001, nnshift=True, legacy=False):
+def fir_lowpass_filter(sr_input,
+                       sr_output,
+                       numtaps,
+                       cutoff=None,
+                       window=('kaiser', 5.0),
+                       legacy=False):
     """
-    Builds an anti-aliasing lowpass filter with cutoff approximately equal
-    to (1/2) * INITIAL_SAMPLING_RATE * up / down.
-    Null-on-Nyquist anti-aliasing filter implementation based on:
-    https://github.com/jthiem/nnresample/blob/master/nnresample/nnresample.py
+    Build an anti-aliasing finite impulse response lowpass filter.
     
     Args
     ----
-    up (int): upsampling factor
-    down (int): downsampling factor
-    beta (float): Kaiser window shape parameter
-    window_length (int): finite impulse response window length
-    nnshift (bool): shift anti-aliasing filter cutoff to move null-on-Nyquist
-    legacy (bool): construct lowpass filter from sinc function + kaiser window
+    sr_input (int): input sampling rate (Hz)
+    sr_output (int): output sampling rate (Hz)
+    numtaps (int): length of FIR in samples at filter sampling rate
+    cutoff (int): lowpass filter cutoff frequency in Hz
+    window (tuple): argument for `scipy.signal.windows.get_window`
+    legacy (bool): if True, construct filter from `np.sinc` and window
     
     Returns
     -------
-    shifted_filt (np.array of shape [window_length]): filter impulse response
+    filt (np.ndarray): finite impulse response of lowpass filter
+    sr_filt (int): sampling rate of lowpass filter impulse response
     """
-    # Ensure the specifed upsampling and downsampling factors are efficient
-    # (rational approximation to save computation time on really long signals)
-    # *** this code block was stolen from scipy.signal.resample_poly ***
-    greatest_common_divisor = np.gcd(up, down)
-    up = up // greatest_common_divisor
-    down = down // greatest_common_divisor
+    if sr_output is None:
+        sr_output = sr_input
+    greatest_common_divisor = np.gcd(int(sr_input), int(sr_output))
+    down = int(sr_input) // greatest_common_divisor
+    up = int(sr_output) // greatest_common_divisor
+    sr_filt = sr_input * up
+    if cutoff is None:
+        cutoff = sr_output / 2
+    assert cutoff <= sr_output / 2, "cutoff may not exceed Nyquist"
     if legacy:
-        # Construct lowpass-filter with sinc function and kaiser window
-        # (Copied implementation from afrancl/BinauralLocalizationCNN)
-        t = np.arange(-window_length / 2, int(window_length / 2))
-        filt = np.sinc(t * (up / down)) * (up / down)
-        window = scipy.signal.windows.kaiser(window_length, beta=beta)
-        return window * filt
-    max_rate = np.max([up, down])
-    sfact = np.sqrt(1 + (beta / np.pi) ** 2)
-    # Generate first filter attempt (6dB attenuation at f_c).
-    filt = scipy.signal.fir_filter_design.firwin(
-        window_length,
-        1/max_rate,
-        window=('kaiser', beta))
-    # If nnshift is set to False, simply return the first filter
-    if not nnshift:
-        return filt
-    # Compute frequency response of the first filter
-    N_FFT = 2 ** 19
-    NBINS = N_FFT / 2 + 1
-    paddedfilt = np.zeros(N_FFT)
-    paddedfilt[:window_length] = filt
-    ffilt = np.fft.rfft(paddedfilt)
-    # Find the minimum between f_c and f_c+sqrt(1+(beta/pi)^2)/window_length
-    bot = int(np.floor(NBINS / max_rate))
-    top = int(np.ceil(NBINS * (1 / max_rate + 2 * sfact / window_length)))
-    firstnull = (np.argmin(np.abs(ffilt[bot:top])) + bot) / NBINS
-    # Generate a shifted filter with the cutoff on the first null
-    shifted_filt = scipy.signal.fir_filter_design.firwin(
-        window_length,
-        -firstnull+2/max_rate,
-        window=('kaiser', beta))
-    return shifted_filt
+        t = np.arange(numtaps) - int(numtaps/2)
+        fc = cutoff / sr_filt
+        filt = 2 * fc * np.sinc(2 * fc * t)
+        w = scipy.signal.windows.get_window(tuple(window), numtaps)
+        return w * filt, sr_filt
+    filt = scipy.signal.firwin(
+        numtaps=numtaps,
+        cutoff=cutoff,
+        width=None,
+        window=tuple(window),
+        pass_zero=True,
+        scale=True,
+        fs=sr_filt)
+    return filt, sr_filt
 
 
-def tfnnresample(tensor_input,
-                 sr_input,
-                 sr_output,
-                 kwargs_nnresample_poly_filter={},
-                 verbose=True):
+def tf_fir_resample(tensor_input,
+                    sr_input,
+                    sr_output,
+                    kwargs_fir_lowpass_filter={},
+                    verbose=True):
     """
-    Tensorflow function for resampling time-domain signals.
-    Null-on-Nyquist anti-aliasing lowpass filter is applied.
+    Tensorflow function for resampling time-domain signals with an FIR lowpass filter.
     
     Args
     ----
@@ -709,9 +695,8 @@ def tfnnresample(tensor_input,
         [batch, time], [batch, freq, time], or [batch, freq, time, 1])
     sr_input (int): input sampling rate in Hz
     sr_output (int): output sampling rate in Hz
-    kwargs_nnresample_poly_filter (dict): keyword arguments for nnresample_poly_filter,
+    kwargs_fir_lowpass_filter (dict): keyword arguments for fir_lowpass_filter,
         which can be used to alter cutoff frequency of anti-aliasing lowpass filter
-        (defaults to (1/2) * sr_output)
     verbose (bool): if True, function will print optional information
     
     Returns
@@ -721,15 +706,15 @@ def tfnnresample(tensor_input,
     # Expand dimensions of input tensor to [batch, freq, time, channels] for 2d conv operation
     if len(tensor_input.shape) == 2:
         if verbose:
-            print('[tfnnresample] interpreting `tensor_input.shape` as [batch, time]')
+            print('[tf_fir_resample] interpreting `tensor_input.shape` as [batch, time]')
         tensor_input_expanded = tensor_input[:, tf.newaxis, :, tf.newaxis]
     elif len(tensor_input.shape) == 3:
         if verbose:
-            print('[tfnnresample] interpreting `tensor_input.shape` as [batch, freq, time]')
+            print('[tf_fir_resample] interpreting `tensor_input.shape` as [batch, freq, time]')
         tensor_input_expanded = tensor_input[:, :, :, tf.newaxis]
     else:
         if verbose:
-            print('[tfnnresample] interpreting `tensor_input.shape` as [batch, freq, time, channels]')
+            print('[tf_fir_resample] interpreting `tensor_input.shape` as [batch, freq, time, channels]')
         tensor_input_expanded = tensor_input
     msg = "dimensions of `tensor_input` must support re-shaping to [batch, freq, time, channels]"
     assert (len(tensor_input_expanded.shape) == 4), msg
@@ -753,29 +738,17 @@ def tfnnresample(tensor_input,
         tensor_input_upsampled = tf.gather(tensor_input_padded, indices, axis=2)
     else:
         tensor_input_upsampled = tensor_input_expanded
-    # Next construct lowpass anti-aliasing filter (kwargs_nnresample_poly_filter will override up/down)
-    kwargs_nnresample_poly_filter = dict(kwargs_nnresample_poly_filter) # prevents modifying in-place
-    if kwargs_nnresample_poly_filter.get('up', None) is None:
-        kwargs_nnresample_poly_filter['up'] = up
-    elif verbose:
-        print('[tfnnresample] using up={} rather than up={} for nnresample_poly_filter'.format(
-            kwargs_nnresample_poly_filter['up'], up))
-    if kwargs_nnresample_poly_filter.get('down', None) is None:
-        kwargs_nnresample_poly_filter['down'] = down
-    elif verbose:
-        print('[tfnnresample] using down={} rather than down={} for nnresample_poly_filter'.format(
-            kwargs_nnresample_poly_filter['down'], down))
-    if kwargs_nnresample_poly_filter.get('window_length', None) is None:
-        kwargs_nnresample_poly_filter['window_length'] = int(tensor_input_upsampled.shape[2])
-        if verbose:
-            print('[tfnnresample] using window_length={} for nnresample_poly_filter'.format(
-                kwargs_nnresample_poly_filter['window_length']))
+    # Next construct anti-aliasing lowpass filter
+    kwargs_fir_lowpass_filter = dict(kwargs_fir_lowpass_filter) # prevents modifying in-place
+    if kwargs_fir_lowpass_filter.get('numtaps', None) is None:
+        kwargs_fir_lowpass_filter['numtaps'] = int(tensor_input_upsampled.shape[2])
+    if kwargs_fir_lowpass_filter.get('cutoff', None) is None:
+        kwargs_fir_lowpass_filter['cutoff'] = sr_output / 2
     if verbose:
-        print('[tfnnresample] using cutoff frequency near {} Hz for anti-aliasing lowpass filter'.format(
-            (kwargs_nnresample_poly_filter['up']/kwargs_nnresample_poly_filter['down']) * (sr_input/2)))
-    aa_filter_ir = nnresample_poly_filter(**kwargs_nnresample_poly_filter)
-    aa_filter_ir_tensor = tf.constant(aa_filter_ir, dtype=tensor_input.dtype)
-    aa_filter_ir_tensor = aa_filter_ir_tensor[tf.newaxis, :, tf.newaxis, tf.newaxis]
+        print('[tf_fir_resample] `kwargs_fir_lowpass_filter`: {}'.format(kwargs_fir_lowpass_filter))
+    filt, sr_filt = fir_lowpass_filter(sr_input, sr_output, **kwargs_fir_lowpass_filter)
+    filt = filt * up # Re-scale filter to offset attenuation from upsampling
+    filt = tf.constant(filt, dtype=tensor_input.dtype)[tf.newaxis, :, tf.newaxis, tf.newaxis]
     tensor_eye = tf.eye(
         num_rows=list(tensor_input_upsampled.shape)[-1],
         num_columns=None,
@@ -785,7 +758,7 @@ def tfnnresample(tensor_input,
     # Apply the lowpass filter and downsample in one step via strided convolution
     tensor_input_resampled = tf.nn.convolution(
         tensor_input_upsampled,
-        aa_filter_ir_tensor * tensor_eye,
+        filt * tensor_eye,
         strides=[1, 1, down, 1],
         padding='SAME',
         data_format='NHWC')

@@ -1,5 +1,6 @@
 import os
 import sys
+import pdb
 import numpy as np
 import tensorflow as tf
 
@@ -15,8 +16,8 @@ def cochlea(tensor_input,
             dtype=tf.float32,
             config_filterbank={},
             config_subband_processing={},
-            kwargs_nnresample_poly_filter_input={},
-            kwargs_nnresample_poly_filter_output={},
+            kwargs_fir_lowpass_filter_input={},
+            kwargs_fir_lowpass_filter_output={},
             kwargs_custom_slice={},
             kwargs_sigmoid_rate_level_function={},
             kwargs_spike_rate_level_function={},
@@ -32,12 +33,12 @@ def cochlea(tensor_input,
         sr_cochlea = sr_input
     if sr_output is None:
         sr_output = sr_input
-    if not sr_input == sr_cochlea:
-        lambda_resample = lambda x: util_signal.tfnnresample(
+    if (not sr_input == sr_cochlea) or (kwargs_fir_lowpass_filter_input):
+        lambda_resample = lambda x: util_signal.tf_fir_resample(
             x,
             sr_input=sr_input,
             sr_output=sr_cochlea,
-            kwargs_nnresample_poly_filter=kwargs_nnresample_poly_filter_input,
+            kwargs_fir_lowpass_filter=kwargs_fir_lowpass_filter_input,
             verbose=False)
         model.add(tf.keras.layers.Lambda(lambda_resample, name='resample_input'))
     
@@ -86,16 +87,16 @@ def cochlea(tensor_input,
         model.add(tf.keras.layers.Lambda(lambda x: tf.nn.relu(x), dtype=dtype, name='relu_subbands'))
         print('[cochlea] half-wave rectified subbands')
     # Resample subbands from sr_cochlea to sr_output
-    if (not sr_output == sr_cochlea) or (kwargs_nnresample_poly_filter_output):
-        lambda_resample = lambda x: util_signal.tfnnresample(
+    if (not sr_output == sr_cochlea) or (kwargs_fir_lowpass_filter_output):
+        lambda_resample = lambda x: util_signal.tf_fir_resample(
             x,
             sr_input=sr_cochlea,
             sr_output=sr_output,
-            kwargs_nnresample_poly_filter=kwargs_nnresample_poly_filter_output,
+            kwargs_fir_lowpass_filter=kwargs_fir_lowpass_filter_output,
             verbose=False)
         model.add(tf.keras.layers.Lambda(lambda_resample, dtype=dtype, name='resample_subbands'))
         print('[cochlea] resampled subbands from {} Hz to {} Hz with filter: {}'.format(
-            int(sr_cochlea), int(sr_output), kwargs_nnresample_poly_filter_output))
+            int(sr_cochlea), int(sr_output), kwargs_fir_lowpass_filter_output))
         # Half-wave rectify subbands again after resampling
         if config_subband_processing.get('rectify', False):
             model.add(tf.keras.layers.Lambda(lambda x: tf.nn.relu(x), dtype=dtype, name='relu_resampled_subbands'))
@@ -575,6 +576,8 @@ def spike_generator_binomial(tensor_rates,
     if p_noise_stddev is None:
         p_noise_stddev = 0
     if isinstance(n_per_channel, list):
+        if len(tensor_spike_probs.shape) == 3:
+            tensor_spike_probs = tf.expand_dims(tensor_spike_probs, -1)
         # If `n_per_channel` is a list, parallelize binomial sampling across
         # channels such that each channel can use a different `n`
         msg = "n_per_step={} not compatible with n_per_channel={}".format(n_per_step, n_per_channel)

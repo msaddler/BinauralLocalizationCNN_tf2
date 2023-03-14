@@ -42,12 +42,12 @@ def build_network(tensor_input, list_layer_dict, n_classes_dict={}):
                 function=tf.slice,
                 arguments=layer_dict['args'],
                 name=layer_dict['args'].get('name', 'slice'))
-        elif 'tfnnresample' in layer_type:
-            name = layer_dict['args'].pop('name', 'tfnnresample')
+        elif 'tf_fir_resample' in layer_type:
+            name = layer_dict['args'].pop('name', 'tf_fir_resample')
             arguments = {'verbose': False}
             arguments.update(layer_dict['args'])
             layer = tf.keras.layers.Lambda(
-                function=util_signal.tfnnresample,
+                function=util_signal.tf_fir_resample,
                 arguments=arguments,
                 name=name)
         elif 'roex' in layer_type:

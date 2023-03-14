@@ -10,12 +10,14 @@
             "power_compression": 0.3,
             "rectify": true
         },
-        "kwargs_nnresample_poly_filter_input": {},
-        "kwargs_nnresample_poly_filter_output": {
-            "down": 6,
-            "legacy": true,
-            "up": 1,
-            "window_length": 4097
+        "kwargs_fir_lowpass_filter_input": {},
+        "kwargs_fir_lowpass_filter_output": {
+            "cutoff": 4000,
+            "numtaps": 4097,
+            "window": [
+                "kaiser",
+                5.0
+            ]
         },
         "sr_cochlea": 48000,
         "sr_input": 48000,

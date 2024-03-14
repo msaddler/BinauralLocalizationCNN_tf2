@@ -6,37 +6,77 @@ import glob
 import json
 import pdb
 import numpy as np
+import tensorflow as tf
+import tensorflow_io as tfio
+
+import util_tfrecords
+import util_signal
+import util_cochlea
+import util_network
+import util_optimize
+import util_evaluate
 
 
-def prepare_localization_example(example, signal_slice_length=40000):
+def prepare_localization_example(example,
+                                 signal_slice_length=40000,
+                                 rate_in=44100,
+                                 rate_out=40000,
+                                 key_int='label_loc_int'):
     """
     Helper function prepares examples loaded from sound localization
     tfrecord datasets by computing a sound location integer label and
-    taking a random excerpt of the signal (signal_slice_length
-    specifies the slice length in samples).
+    taking a random 1-second excerpt from `nervegram_meanrates`.
     """
     # Francl localization label convention (labels 0-71 correspond to elevation = 0)
-    example['label_loc_int'] = tf.cast(
-        tf.math.add(
-            (example['foreground_elevation'] / 10) * 72,
-            (example['foreground_azimuth'] / 5)
-        ),
-        tf.int64
-    )
+    if 'foreground_azimuth' in example:
+        if example['foreground_azimuth'].dtype == example['foreground_elevation'].dtype:
+            example[key_int] = tf.cast(
+                tf.math.add(
+                    (example['foreground_elevation'] / 10) * 72,
+                    (example['foreground_azimuth'] / 5)
+                ),
+                tf.int64
+            )
+    elif 'foreground_azim' in example:
+        if example['foreground_azim'].dtype == example['foreground_elev'].dtype:
+            example[key_int] = tf.cast(
+                tf.math.add(
+                    (example['foreground_elev'] / 10) * 72,
+                    (example['foreground_azim'] / 5)
+                ),
+                tf.int64
+            )
+    else:
+        print(f"[prepare_localization_example] failed to infer {key_int}")
+    # Prepare audio signal input
     if 'signal' in example:
-        # Resample signal from 44100 Hz to 40000 Hz on the CPU
-        example['signal'] = util_signal.tf_scipy_signal_resample_poly(
+        static_shape = list(example['signal'].shape)
+        example['signal'] = tfio.audio.resample(
             example['signal'],
-            up=40000,
-            down=44100,
-            axis=-2)
+            rate_in=rate_in,
+            rate_out=rate_out,
+            name='tfio.audio.resample')
+        static_shape[0] = int(rate_out/rate_in * static_shape[0])
+        example['signal'] = tf.ensure_shape(example['signal'], static_shape)
+        print(f"[prepare_localization_example] `signal` resampled from {rate_in} to {rate_out} Hz: {example['signal'].shape}")
         if signal_slice_length is not None:
-            # Take a random excerpt of specified length from the signal
+            if signal_slice_length > example['signal'].shape[-2]:
+                # Quick fix to zero-pad signals that are shorter than expected
+                pad_len = int((signal_slice_length - example['signal'].shape[-2]) / 2)
+                example['signal'] = tf.pad(
+                    example['signal'],
+                    [[pad_len, pad_len], [0, 0]],
+                    mode="CONSTANT",
+                    constant_values=0)
+                assert len(example['signal'].shape) == 2
+                assert example['signal'].shape[-2] == signal_slice_length
+                print(f"[prepare_localization_example] `signal` padded: {example['signal'].shape}")
             example['signal'] = util_cochlea.random_slice(
                 example['signal'],
                 slice_length=signal_slice_length,
                 axis=-2, # Time axis
                 buffer=None)
+            print(f"[prepare_localization_example] `signal` sliced: {example['signal'].shape}")
     return example
 
 
@@ -58,14 +98,6 @@ if __name__ == "__main__":
     if (args.tfrecords_eval is not None) and (os.path.exists(os.path.join(args.dir_model, args.basename_eval))):
         print('[SKIP] {} already exists!'.format(os.path.join(args.dir_model, args.basename_eval)))
         sys.exit()
-    # Import tensorflow after evaluation routine check for speed
-    import tensorflow as tf
-    import util_tfrecords
-    import util_signal
-    import util_cochlea
-    import util_network
-    import util_optimize
-    import util_evaluate
     # Load config file
     fn_config = args.config
     if fn_config == os.path.basename(fn_config):
@@ -153,17 +185,12 @@ if __name__ == "__main__":
         print('[:: TFRECORDS TRAIN ::] {} ({} files)'.format(args.tfrecords_train, len(glob.glob(args.tfrecords_train))))
         print('[:: TFRECORDS VALID ::] {} ({} files)'.format(args.tfrecords_valid, len(glob.glob(args.tfrecords_valid))))
         print('[:::::::::::::::::::::]')
-        list_gpu = tf.config.list_physical_devices(device_type='GPU')
-        strategy = tf.distribute.MirroredStrategy()
-        print('\n\nAVAILABLE GPU DEVICES: {}'.format([gpu.name for gpu in list_gpu]))
-        print('NUMBER OF PARALLEL TOWERS: {}\n\n'.format(strategy.num_replicas_in_sync))
-        with strategy.scope():
-            history = util_optimize.optimize(
-                dir_model=args.dir_model,
-                tfrecords_train=args.tfrecords_train,
-                tfrecords_valid=args.tfrecords_valid,
-                dataset_train=None,
-                dataset_valid=None,
-                model_io_function=model_io_function,
-                kwargs_dataset_from_tfrecords=kwargs_dataset_from_tfrecords,
-                **CONFIG['kwargs_optimize'])
+        history = util_optimize.optimize(
+            dir_model=args.dir_model,
+            tfrecords_train=args.tfrecords_train,
+            tfrecords_valid=args.tfrecords_valid,
+            dataset_train=None,
+            dataset_valid=None,
+            model_io_function=model_io_function,
+            kwargs_dataset_from_tfrecords=kwargs_dataset_from_tfrecords,
+            **CONFIG['kwargs_optimize'])

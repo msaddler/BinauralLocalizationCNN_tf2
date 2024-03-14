@@ -1,9 +1,9 @@
 import os
 import sys
 import pdb
+import copy
 import numpy as np
 import tensorflow as tf
-import tensorflow_addons as tfa
 
 import util_signal
 
@@ -17,79 +17,109 @@ def build_network(tensor_input, list_layer_dict, n_classes_dict={}):
     tensors_dict = {}
     for layer_dict in list_layer_dict:
         layer_type = layer_dict['layer_type'].lower()
-        if ('batchnormalization' in layer_type) or ('batch_normalization' in layer_type):
-            layer = tf.keras.layers.BatchNormalization(**layer_dict['args'])
-        elif ('layernormalization' in layer_type) or ('layer_normalization' in layer_type):
-            layer = tf.keras.layers.LayerNormalization(**layer_dict['args'])
-        elif ('instancenormalization' in layer_type) or ('instance_normalization' in layer_type):
-            layer = tfa.layers.InstanceNormalization(**layer_dict['args'])
-        elif ('groupnormalization' in layer_type) or ('group_normalization' in layer_type):
-            layer = tfa.layers.GroupNormalization(**layer_dict['args'])
-        elif 'conv2d' in layer_type:
-            layer = PaddedConv2D(**layer_dict['args'])
-            while len(tensor_output.shape) < 4:
-                tensor_output = tf.expand_dims(tensor_output, axis=-1)
-        elif 'dense' in layer_type:
-            layer = tf.keras.layers.Dense(**layer_dict['args'])
-        elif 'dropout' in layer_type:
-            layer = tf.keras.layers.Dropout(**layer_dict['args'])
-        elif 'maxpool' in layer_type:
-            layer = tf.keras.layers.MaxPool2D(**layer_dict['args'])
-        elif 'hpool' in layer_type:
-            layer = HanningPooling(**layer_dict['args'])
-        elif 'slice' in layer_type:
-            layer = tf.keras.layers.Lambda(
-                function=tf.slice,
-                arguments=layer_dict['args'],
-                name=layer_dict['args'].get('name', 'slice'))
-        elif 'tf_fir_resample' in layer_type:
-            name = layer_dict['args'].pop('name', 'tf_fir_resample')
-            arguments = {'verbose': False}
-            arguments.update(layer_dict['args'])
-            layer = tf.keras.layers.Lambda(
-                function=util_signal.tf_fir_resample,
-                arguments=arguments,
-                name=name)
-        elif 'roex' in layer_type:
-            layer = RoexFilterbank(**layer_dict['args'])
-        elif 'noise' in layer_type:
-            layer = GaussianNoise(**layer_dict['args'])
-        elif 'tf.keras.layers.lstm' in layer_type:
-            layer = tf.keras.layers.LSTM(**layer_dict['args'])
-        elif 'tf.keras.layers.convlstm1d' in layer_type:
-            layer = tf.keras.layers.ConvLSTM1D(**layer_dict['args'])
-        elif 'tf.keras.layers.convlstm2d' in layer_type:
-            layer = tf.keras.layers.ConvLSTM2D(**layer_dict['args'])
-        elif 'tf.keras.layers.convlstm3d' in layer_type:
-            layer = tf.keras.layers.ConvLSTM3D(**layer_dict['args'])
-        elif 'reshape' in layer_type:
-            layer = tf.keras.layers.Reshape(**layer_dict['args'])
-        elif 'permute' in layer_type:
-            layer = tf.keras.layers.Permute(**layer_dict['args'])
-        elif 'expandlast' in layer_type:
-            layer = ExpandLastDimension(**layer_dict['args'])
-        elif 'flattenlast' in layer_type:
-            layer = FlattenLastDimension(**layer_dict['args'])
-        elif 'flatten' in layer_type:
-            layer = tf.keras.layers.Flatten(**layer_dict['args'])
-        elif ('leakyrelu' in layer_type) or ('leaky_relu' in layer_type):
-            layer = tf.keras.layers.LeakyReLU(**layer_dict['args'])
-        elif 'relu' in layer_type:
-            layer = tf.keras.layers.ReLU(**layer_dict['args'])
-        elif 'fc_top' in layer_type:
-            layer = DenseTaskHeads(
-                n_classes_dict=n_classes_dict,
-                **layer_dict['args'])
-        elif 'lstm_top' in layer_type:
-            layer = LSTMTaskHeads(
-                n_classes_dict=n_classes_dict,
-                **layer_dict['args'])
+        if 'branch' in layer_type:
+            # Branch point (duplicate network for each key in `n_classes_dict`)
+            tensor_output = {k: tensor_output for k in n_classes_dict.keys()}
         else:
-            msg = "layer_type={} not recognized".format(layer_type)
-            raise NotImplementedError(msg)
-        tensor_output = layer(tensor_output)
-        if layer_dict.get('args', {}).get('name', None) is not None:
-            tensors_dict[layer_dict['args']['name']] = tensor_output
+            # Select a layer constructor
+            if ('batchnormalization' in layer_type) or ('batch_normalization' in layer_type):
+                layer = tf.keras.layers.BatchNormalization
+            elif ('layernormalization' in layer_type) or ('layer_normalization' in layer_type):
+                layer = tf.keras.layers.LayerNormalization
+            elif ('groupnormalization' in layer_type) or ('group_normalization' in layer_type):
+                layer = tf.keras.layers.GroupNormalization
+            elif ('lrn' in layer_type) or ('local_response_norm' in layer_type):
+                layer = lambda **args: tf.keras.layers.Lambda(
+                    function=tf.nn.local_response_normalization,
+                    arguments=args,
+                    name=args.pop('name', 'local_response_norm'))
+            elif 'depthwiseconv2d' in layer_type:
+                layer = PaddedDepthwiseConv2D
+                if isinstance(tensor_output, dict):
+                    for key_branch in tensor_output.keys():
+                        assert len(tensor_output[key_branch].shape) == 4
+                else:
+                    assert len(tensor_output.shape) == 4
+            elif 'conv2d' in layer_type:
+                layer = PaddedConv2D
+                if isinstance(tensor_output, dict):
+                    for key_branch in tensor_output.keys():
+                        assert len(tensor_output[key_branch].shape) == 4
+                else:
+                    assert len(tensor_output.shape) == 4
+            elif 'dense' in layer_type:
+                layer = tf.keras.layers.Dense
+            elif 'dropout' in layer_type:
+                layer = tf.keras.layers.Dropout
+            elif 'maxpool' in layer_type:
+                layer = tf.keras.layers.MaxPool2D
+            elif 'hpool' in layer_type:
+                layer = HanningPooling
+            elif 'slice' in layer_type:
+                layer = lambda **args: tf.keras.layers.Lambda(
+                    function=tf.slice,
+                    arguments=args,
+                    name=args.pop('name', 'slice'))
+            elif 'tf_fir_resample' in layer_type:
+                args = copy.deepcopy(layer_dict.get('args', {}))
+                msg = "tf_fir_resample arguments must specify `return_io_function=True` to use as a layer"
+                assert args.get('return_io_function', True), msg
+                name = args.pop('name', 'tf_fir_resample')
+                layer_io_function = util_signal.tf_fir_resample(tensor_output, **args)
+                layer = lambda **args: tf.keras.layers.Lambda(
+                    function=layer_io_function,
+                    name=name)
+            elif 'roex' in layer_type:
+                layer = RoexFilterbank
+            elif 'noise' in layer_type:
+                layer = GaussianNoise
+            elif 'tf.keras.layers.lstm' in layer_type:
+                layer = tf.keras.layers.LSTM
+            elif 'tf.keras.layers.convlstm1d' in layer_type:
+                layer = tf.keras.layers.ConvLSTM1D
+            elif 'tf.keras.layers.convlstm2d' in layer_type:
+                layer = tf.keras.layers.ConvLSTM2D
+            elif 'tf.keras.layers.convlstm3d' in layer_type:
+                layer = tf.keras.layers.ConvLSTM3D
+            elif 'reshape' in layer_type:
+                layer = tf.keras.layers.Reshape
+            elif 'permute' in layer_type:
+                layer = tf.keras.layers.Permute
+            elif 'expandlast' in layer_type:
+                layer = ExpandLastDimension
+            elif 'flattenlast' in layer_type:
+                layer = FlattenLastDimension
+            elif 'flatten' in layer_type:
+                layer = tf.keras.layers.Flatten
+            elif ('leakyrelu' in layer_type) or ('leaky_relu' in layer_type):
+                layer = tf.keras.layers.LeakyReLU
+            elif 'relu' in layer_type:
+                layer = tf.keras.layers.ReLU
+            elif 'fc_top' in layer_type:
+                layer = lambda **args: DenseTaskHeads(n_classes_dict=n_classes_dict, **args)
+            else:
+                msg = "layer_type={} not recognized".format(layer_type)
+                raise NotImplementedError(msg)
+            # Build the layer and store named tensors in `tensors_dict`
+            if isinstance(tensor_output, dict):
+                for key_branch in tensor_output.keys():
+                    args = copy.deepcopy(layer_dict.get('args', {}))
+                    if 'name' in args.keys():
+                        args['name'] = f"{args['name']}_{key_branch}"
+                    if 'fc_top' in layer_type:
+                        assert 'name' in args.keys()
+                        tensor_output[key_branch] = tf.keras.layers.Dense(
+                            units=n_classes_dict[key_branch],
+                            **args)(tensor_output[key_branch])
+                    else:
+                        tensor_output[key_branch] = layer(**args)(tensor_output[key_branch])
+                    if args.get('name', None) is not None:
+                        tensors_dict[args['name']] = tensor_output[key_branch]
+            else:
+                args = copy.deepcopy(layer_dict.get('args', {}))
+                tensor_output = layer(**args)(tensor_output)
+                if args.get('name', None) is not None:
+                    tensors_dict[args['name']] = tensor_output
     return tensor_output, tensors_dict
 
 
@@ -111,6 +141,33 @@ def same_pad_along_axis(tensor_input,
     paddings = [(0, 0)] * len(tensor_input.shape)
     paddings[axis] = (p // 2, p - p // 2)
     return tf.pad(tensor_input, paddings, **kwargs)
+
+
+def PaddedDepthwiseConv2D(kernel_size,
+                          strides=(1, 1),
+                          padding='VALID',
+                          **kwargs):
+    """
+    Wrapper function around tf.keras.layers.DepthwiseConv2D
+    to support custom padding options
+    """
+    if padding.upper() == 'VALID_TIME':
+        pad_function = lambda x : same_pad_along_axis(
+            x,
+            kernel_length=kernel_size[0],
+            stride_length=strides[0],
+            axis=1)
+        padding = 'VALID'
+    else:
+        pad_function = lambda x: x
+    def layer(tensor_input):
+        depthwise_conv2d_layer = tf.keras.layers.DepthwiseConv2D(
+            kernel_size,
+            strides=strides,
+            padding=padding,
+            **kwargs)
+        return depthwise_conv2d_layer(pad_function(tensor_input))
+    return layer
 
 
 def PaddedConv2D(filters,
@@ -423,26 +480,6 @@ def DenseTaskHeads(n_classes_dict={}, name='logits', **kwargs):
             else:
                 classification_name = name
             classification_layer = tf.keras.layers.Dense(
-                units=n_classes_dict[key],
-                name=classification_name,
-                **kwargs)
-            tensors_logits[key] = classification_layer(tensor_input)
-        return tensors_logits
-    return layer
-
-
-def LSTMTaskHeads(n_classes_dict={}, name='logits', **kwargs):
-    """
-    LSTM layer for each task head specified in n_classes_dict
-    """
-    def layer(tensor_input):
-        tensors_logits = {}
-        for key in sorted(n_classes_dict.keys()):
-            if len(n_classes_dict.keys()) > 1:
-                classification_name = '{}_{}'.format(name, key)
-            else:
-                classification_name = name
-            classification_layer = tf.keras.layers.LSTM(
                 units=n_classes_dict[key],
                 name=classification_name,
                 **kwargs)

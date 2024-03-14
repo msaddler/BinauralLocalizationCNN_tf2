@@ -8,7 +8,7 @@ import numpy as np
 import google.protobuf.json_format
 
 import util_signal
-import util_misc
+import util
 
 
 def _bytes_feature(value):
@@ -45,9 +45,9 @@ def serialize_example(example):
             feature[k] = _bytes_feature(example[k].tobytes())
         else:
             if np.issubdtype(example[k].dtype, int):
-                feature[k] = _int64_feature(example[k])
+                feature[k] = _int64_feature(tf.cast(example[k], tf.int64))
             else:
-                feature[k] = _float_feature(example[k])
+                feature[k] = _float_feature(tf.cast(example[k], tf.float32))
     example_proto = tf.train.Example(features=tf.train.Features(feature=feature))
     return example_proto.SerializeToString()
 
@@ -104,87 +104,6 @@ def get_feature_description_from_tfrecord(filenames, compression_type='GZIP'):
     return feature_description
 
 
-def write_tfrecords_from_hdf5(fn_src,
-                              fn_dst=None,
-                              feature_paths=None,
-                              idx_start=0,
-                              idx_end=None,
-                              compression_type='GZIP',
-                              disp_step=100,
-                              prefix_feature='config_feature_description.pckl',
-                              prefix_bytes='config_bytes_description.pckl'):
-    """
-    This function writes data from an hdf5 source file to tfrecords.
-    The tfrecords file will have the same keys as the hdf5 file unless
-    otherwise specified in `feature_paths`.
-    """
-    if fn_dst is None:
-        if idx_end is None:
-            fn_dst = fn_src[:fn_src.rfind('.')] + '.tfrecords'
-        else:
-            fn_dst = fn_src[:fn_src.rfind('.')] + '_{:06d}-{:06d}.tfrecords'.format(idx_start, idx_end)
-    assert not fn_dst == fn_src
-    with h5py.File(fn_src, 'r') as f_src:
-        if feature_paths is None:
-            print('### Inferring feature paths from {}:'.format(fn_src))
-            feature_paths = []
-            for k_src in util_misc.get_hdf5_dataset_key_list(f_src):
-                if f_src[k_src].shape[0] > 1:
-                    feature_paths.append(k_src)
-                    print('|__ {}'.format(k_src))
-
-        assert isinstance(feature_paths, list) and len(feature_paths) >= 1
-        for itr_k in range(len(feature_paths)):
-            if isinstance(feature_paths[itr_k], str):
-                feature_paths[itr_k] = (feature_paths[itr_k], feature_paths[itr_k])
-            assert isinstance(feature_paths[itr_k], tuple) and len(feature_paths[itr_k]) == 2
-        if idx_end is None:
-            (k_src, k_dst) = feature_paths[0]
-            idx_end = f_src[k_src].shape[0]
-
-        print('### Begin writing: {}'.format(fn_dst))
-        disp_str = '| idx_start={:06d} | idx_end={:06d} | idx={:06d} |'
-        with tf.io.TFRecordWriter(fn_dst + '~OPEN', options=compression_type) as writer:
-            for idx in range(idx_start, idx_end):
-                example = {
-                    k_dst: f_src[k_src][idx] for (k_src, k_dst) in feature_paths
-                }
-                if idx == idx_start:
-                    print('### EXAMPLE STRUCTURE ###')
-                    for k in sorted(example.keys()):
-                        v = np.array(example[k])
-                        if np.sum(v.shape) <= 10:
-                            print('|__', k, v.dtype, v.shape, v)
-                        else:
-                            print('|__', k, v.dtype, v.shape, v.nbytes)
-                    print('### EXAMPLE STRUCTURE ###')
-                if idx % disp_step == 0:
-                    print(disp_str.format(idx_start, idx_end, idx))
-                writer.write(serialize_example(example))
-        os.rename(fn_dst + '~OPEN', fn_dst)
-        print('### Finished writing: {}'.format(fn_dst))
-    feature_description, bytes_description = get_description_from_example(example)
-
-    if prefix_feature is not None:
-        fn_pckl_feature_description = os.path.join(os.path.dirname(fn_dst), prefix_feature)
-        if os.path.exists(fn_pckl_feature_description):
-            print('### Already exists: {}'.format(fn_pckl_feature_description))
-        else:
-            with open(fn_pckl_feature_description, 'wb') as f_pckl:
-                pickle.dump(feature_description, f_pckl)
-            print('### Wrote: {}'.format(fn_pckl_feature_description))
-    if prefix_bytes is not None:
-        fn_pckl_bytes_description = os.path.join(os.path.dirname(fn_dst), prefix_bytes)
-        if os.path.exists(fn_pckl_bytes_description):
-            print('### Already exists: {}'.format(fn_pckl_feature_description))
-        else:
-            with open(fn_pckl_bytes_description, 'wb') as f_pckl:
-                pickle.dump(bytes_description, f_pckl)
-            print('### Wrote: {}'.format(fn_pckl_bytes_description))
-
-    return feature_description, bytes_description
-
-
 def combine_tfrecords(list_fn_src,
                       fn_dst,
                       compression_type='GZIP',
@@ -233,6 +152,11 @@ def get_dataset_from_tfrecords(filenames,
                                bytes_description=None,
                                compression_type='GZIP',
                                eval_mode=False,
+                               num_parallel=tf.data.AUTOTUNE,
+                               deterministic=False,
+                               cycle_length=None,
+                               block_length=1,
+                               buffer_size=tf.data.AUTOTUNE,
                                buffer_size_prefetch=tf.data.AUTOTUNE,
                                buffer_size_shuffle=100,
                                batch_size=1,
@@ -257,6 +181,10 @@ def get_dataset_from_tfrecords(filenames,
             feature_description = os.path.join(
                 os.path.dirname(filenames[0]),
                 feature_description)
+        if not os.path.exists(feature_description) and ('.pckl' in feature_description):
+            feature_description = feature_description.replace('.pckl', '.pkl')
+        if not os.path.exists(feature_description) and ('.pkl' in feature_description):
+            feature_description = feature_description.replace('.pkl', '.pckl')
         if verbose:
             print("Loading feature_description from: {}".format(feature_description))
         with open(feature_description, 'rb') as f:
@@ -273,6 +201,10 @@ def get_dataset_from_tfrecords(filenames,
             bytes_description = os.path.join(
                 os.path.dirname(filenames[0]),
                 bytes_description)
+        if not os.path.exists(bytes_description) and ('.pckl' in bytes_description):
+            bytes_description = bytes_description.replace('.pckl', '.pkl')
+        if not os.path.exists(bytes_description) and ('.pkl' in bytes_description):
+            bytes_description = bytes_description.replace('.pkl', '.pckl')
         if verbose:
             print("Loading bytes_description from: {}".format(bytes_description))
         with open(bytes_description, 'rb') as f:
@@ -364,37 +296,31 @@ def get_dataset_from_tfrecords(filenames,
                 example_densified[k] = example[k]
         return example_densified
     
-    def _interleave_function(filenames):
-        dataset = tf.data.TFRecordDataset(
-            filenames,
-            compression_type=compression_type,
-            buffer_size=None,
-            num_parallel_reads=1)
-        dataset = dataset.map(_parse_function, num_parallel_calls=1)
-        if bytes_description:
-            dataset = dataset.map(_decode_function, num_parallel_calls=1)
-            dataset = dataset.map(_densify_function, num_parallel_calls=1)
-        if filter_function is not None:
-            if isinstance(filter_function, list):
-                for _ in filter_function:
-                    dataset = dataset.filter(_)
-            else:
-                dataset = dataset.filter(filter_function)
-        if map_function is not None:
-            if isinstance(map_function, list):
-                for _ in map_function:
-                    dataset = dataset.map(_, num_parallel_calls=1)
-            else:
-                dataset = dataset.map(map_function, num_parallel_calls=1)
-        return dataset
-    
     dataset = tf.data.Dataset.from_tensor_slices(filenames)
     dataset = dataset.interleave(
-        _interleave_function,
-        cycle_length=tf.data.AUTOTUNE,
-        block_length=None,
-        num_parallel_calls=tf.data.AUTOTUNE,
-        deterministic=False)
+        lambda _: tf.data.TFRecordDataset(_, compression_type=compression_type),
+        cycle_length=cycle_length,
+        block_length=block_length,
+        num_parallel_calls=num_parallel,
+        deterministic=deterministic)
+    dataset = dataset.map(_parse_function, num_parallel_calls=num_parallel)
+    if bytes_description:
+        dataset = dataset.map(_decode_function, num_parallel_calls=num_parallel)
+    if any(['_dense_shape' in k for k in feature_description.keys()]):
+        dataset = dataset.map(_densify_function, num_parallel_calls=num_parallel)
+    if filter_function is not None:
+        if isinstance(filter_function, list):
+            for _ in filter_function:
+                dataset = dataset.filter(_)
+        else:
+            dataset = dataset.filter(filter_function)
+    if map_function is not None:
+        if isinstance(map_function, list):
+            for _ in map_function:
+                dataset = dataset.map(_, num_parallel_calls=num_parallel)
+        else:
+            dataset = dataset.map(map_function, num_parallel_calls=num_parallel)
+    
     if not eval_mode:
         dataset = dataset.repeat(count=None)
         dataset = dataset.shuffle(
@@ -414,6 +340,10 @@ def dataset_ragged_to_fixed(example_ragged,
     """
     Helper function converts ragged example to fixed-length example.
     """
+    if (key_fixed in example_ragged) and (example_ragged[key_fixed].shape[0] == len_fixed):
+        msg = "[dataset_ragged_to_fixed] example_ragged contains `{}` with length {} --> returned"
+        print(msg.format(key_fixed, len_fixed))
+        return example_ragged
     signal_ragged = example_ragged[key_ragged]
     signal_ragged = tf.cond(
         tf.shape(signal_ragged)[0] >= len_fixed,
@@ -437,77 +367,3 @@ def dataset_ragged_to_fixed(example_ragged,
         if 'ragged' not in k:
             example_fixed[k] = example_ragged[k]
     return example_fixed
-
-
-def dataset_preprocess(example_foreground,
-                       example_background,
-                       range_dbspl=(60.0, 60.0),
-                       range_snr=(-10.0, 10.0),
-                       key_signal='signal'):
-    """
-    Helper function combines foreground and background examples
-    on the fly with specified range of foreground dBSPL and SNR
-    values.
-    """
-    example = {}
-    key_signal_foreground = 'foreground/{}'.format(key_signal)
-    key_signal_background = 'background/{}'.format(key_signal)
-    for k in sorted(example_foreground.keys()):
-        if k in example_background.keys():
-            example['foreground/' + k] = example_foreground[k]
-        else:
-            example[k] = example_foreground[k]
-    for k in sorted(example_background.keys()):
-        if k in example_foreground.keys():
-            example['background/' + k] = example_background[k]
-        else:
-            example[k] = example_background[k]
-    dtype = example[key_signal_foreground].dtype
-    shape = [tf.shape(example[key_signal_foreground])[0]]
-    while len(shape) < len(example[key_signal_foreground].shape):
-        shape.append(1)
-    axis = list(range(1, len(shape)))
-    if range_dbspl[0] == range_dbspl[1]:
-        dbspl = range_dbspl[0] * tf.ones(
-            shape=shape,
-            dtype=dtype)
-    else:
-        dbspl = tf.random.uniform(
-            shape=shape,
-            minval=range_dbspl[0],
-            maxval=range_dbspl[1],
-            dtype=dtype)
-    if range_snr[0] == range_snr[1]:
-        snr = range_snr[0] * tf.ones(
-            shape=shape,
-            dtype=dtype)
-    else:
-        snr = tf.random.uniform(
-            shape=shape,
-            minval=range_snr[0],
-            maxval=range_snr[1],
-            dtype=dtype)
-    example[key_signal_foreground] = util_signal.tf_set_dbspl(
-        example[key_signal_foreground],
-        dbspl,
-        axis=axis)
-    example[key_signal_background] = util_signal.tf_set_dbspl(
-        example[key_signal_background],
-        dbspl-snr,
-        axis=axis)
-    example[key_signal] = example[key_signal_foreground] + example[key_signal_background]
-    example['{}_dbspl'.format(key_signal_foreground)] = util_signal.tf_get_dbspl(
-        example[key_signal_foreground],
-        axis=axis,
-        keepdims=False)
-    example['{}_dbspl'.format(key_signal_background)] = util_signal.tf_get_dbspl(
-        example[key_signal_background],
-        axis=axis,
-        keepdims=False)
-    example['{}_dbspl'.format(key_signal)] = util_signal.tf_get_dbspl(
-        example[key_signal],
-        axis=axis,
-        keepdims=False)
-    example['dbspl'] = dbspl
-    example['snr'] = snr
-    return example

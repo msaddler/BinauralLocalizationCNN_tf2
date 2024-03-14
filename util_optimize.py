@@ -4,6 +4,7 @@ import pdb
 import glob
 import json
 import time
+import resource
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -34,12 +35,15 @@ class CallbackPrinting(tf.keras.callbacks.Callback):
                 print(display_str, flush=True)
     
     def on_train_batch_end(self, batch, logs=None):
+        if batch == 0:
+            self.epoch_t0 = time.time()
         if batch % self.display_step == 0:
             t_per_batch = (time.time() - self.epoch_t0) / (batch + 1)
-            display_str = 'step {:02d}_{:06d} | {:.4f} s/step | '.format(
+            display_str = 'step {:02d}_{:06d} | {:.4f} s/step | mem: {:06.3f} GB |'.format(
                 self.epoch,
                 batch,
-                t_per_batch)
+                t_per_batch,
+                resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024)
             for key in logs.keys():
                 display_key = key
                 display_key = display_key.replace('fc_top_label_', '')
@@ -103,6 +107,7 @@ def optimize(tfrecords_train=None,
              dataset_valid=None,
              key_inputs='x',
              key_outputs='y',
+             inputs=None,
              model_io_function=None,
              kwargs_dataset_from_tfrecords={},
              kwargs_loss={},
@@ -121,6 +126,7 @@ def optimize(tfrecords_train=None,
              early_stopping_min_delta=0,
              early_stopping_patience=None,
              early_stopping_baseline=None,
+             kwargs_tensorboard={},
              dir_model='saved_models/TEST',
              basename_log='log_optimize.csv',
              basename_ckpt_best='ckpt_BEST',
@@ -147,28 +153,33 @@ def optimize(tfrecords_train=None,
             **kwargs_dataset_from_tfrecords)
     if dataset_valid is None:
         monitor_metric = monitor_metric.replace('val_', '')
-    
-    def get_dataset_inputs_and_targets(example):
-        """
-        This function ensures dataset returns a tuple of (inputs, targets),
-        as required by the tf.keras.Model.fit method when using tf.data.
-        """
-        inputs = example[key_inputs]
-        if isinstance(key_outputs, list):
-            targets = {key_output: example[key_output] for key_output in key_outputs}
-        else:
-            targets = example[key_outputs]
-        return inputs, targets
-    
-    dataset_train = dataset_train.map(get_dataset_inputs_and_targets)
-    if dataset_valid is not None:
-        dataset_valid = dataset_valid.map(get_dataset_inputs_and_targets)
-    
+
+    if inputs is None:
+        # If inputs tensor is not provided, dataset requires formatting for model.fit
+        
+        def get_dataset_inputs_and_targets(example):
+            """
+            This function ensures dataset returns a tuple of (inputs, targets),
+            as required by the tf.keras.Model.fit method when using tf.data.
+            """
+            inputs = example[key_inputs]
+            if isinstance(key_outputs, list):
+                targets = {key_output: example[key_output] for key_output in key_outputs}
+            else:
+                targets = example[key_outputs]
+            return inputs, targets
+
+        dataset_train = dataset_train.map(get_dataset_inputs_and_targets)
+        if dataset_valid is not None:
+            dataset_valid = dataset_valid.map(get_dataset_inputs_and_targets)
+
     # SETUP MODEL
-    example = iter(dataset_train).get_next()[0][0]
-    inputs = tf.keras.Input(shape=example.shape, batch_size=None, dtype=example.dtype)
+    if inputs is None:
+        # If inputs tensor is not provided, get one from formatted dataset
+        example = iter(dataset_train).get_next()[0][0]
+        inputs = tf.keras.Input(shape=example.shape, batch_size=None, dtype=example.dtype)
     model = tf.keras.Model(inputs=inputs, outputs=model_io_function(inputs))
-    
+
     # SETUP LOSS FUNCTION AND METRICS
     if isinstance(key_outputs, list):
         loss_weights = {}
@@ -192,7 +203,7 @@ def optimize(tfrecords_train=None,
     if 'name' not in kwargs_optimizer:
         kwargs_optimizer['name'] = optimizer_name
     if optimizer_name == 'Adam':
-        optimizer = tf.keras.optimizers.Adam(**kwargs_optimizer)
+        optimizer = tf.keras.optimizers.legacy.Adam(**kwargs_optimizer)
     else:
         raise NotImplementedError("optimizer={} not recognized".format(optimizer_name))
     
@@ -201,7 +212,7 @@ def optimize(tfrecords_train=None,
         loss=loss,
         metrics=metrics,
         loss_weights=loss_weights,
-        weighted_metrics=None,
+        weighted_metrics=metrics,
         steps_per_execution=None,
         run_eagerly=None)
     
@@ -253,6 +264,12 @@ def optimize(tfrecords_train=None,
         callbacks.append(callback_ckpt_epoch)
     else:
         filepath_ckpt_epoch = None
+    # Tensorboard
+    if kwargs_tensorboard:
+        callback_tensorboard = tf.keras.callbacks.TensorBoard(
+            log_dir=os.path.join(dir_model, 'logs'),
+            **kwargs_tensorboard)
+        callbacks.append(callback_tensorboard)
     # Determine initial epoch and best metric from optimization log
     initial_epoch = 0
     if os.path.exists(filename_csv_log) and os.path.getsize(filename_csv_log) > 0:
@@ -266,10 +283,13 @@ def optimize(tfrecords_train=None,
         print("#### Resume training log: {}".format(filename_csv_log))
         print("#    initial_epoch: {}".format(initial_epoch))
         print("#    {}: {}".format(monitor_metric, callback_ckpt_best.best))
+    if initial_epoch >= epochs:
+        print("#### Previously completed: {} of {} epochs".format(initial_epoch, epochs))
+        return None
     # Load most recent epoch checkpoint (if available) or best checkpoint
     if filepath_ckpt_epoch is not None:
         filepath_ckpt_epoch_init = filepath_ckpt_epoch.format(epoch=initial_epoch)
-        if initial_epoch == 0:
+        if (initial_epoch == 0) and (len(glob.glob(filepath_ckpt_epoch_init + '*')) == 0):
             print("#### Writing initialization: {}".format(filepath_ckpt_epoch_init))
             model.save_weights(filepath_ckpt_epoch_init)
         if len(glob.glob(filepath_ckpt_epoch_init + '*')) > 0:

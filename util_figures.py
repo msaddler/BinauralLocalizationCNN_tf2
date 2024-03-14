@@ -1,7 +1,7 @@
-import sys
 import os
-import numpy as np
+import sys
 import copy
+import numpy as np
 import matplotlib.pyplot
 import matplotlib.ticker
 import matplotlib.cm
@@ -257,7 +257,7 @@ def make_stimulus_summary_plot(ax_arr,
         if treset:
             x_wav = x_wav - x_wav[0]
         xlimits_wav = [x_wav[0], x_wav[-1]]
-        ylimits_wav = [np.max(np.abs(y_wav)), -np.max(np.abs(y_wav))]
+        ylimits_wav = [-np.max(np.abs(y_wav)), np.max(np.abs(y_wav))]
         ylimits_wav = np.array(ylimits_wav) * (1 + limits_buffer)
         make_line_plot(ax_arr[ax_idx_waveform],
                        x_wav,

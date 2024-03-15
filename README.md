@@ -34,3 +34,8 @@ tqdm                         4.65.0
     - Model directories containing config files with cochlear model parameters and optimization hyperparameters
     - The 10 subdirectories contain the 10 convolutional neural network architectures
     - Trained model weights can be downloaded from our [Google Drive](https://drive.google.com/drive/folders/1s9UC4DoksC7mTlxL2ZQFrn8XI0uJcsoV?usp=share_link)
+
+
+## Contact
+
+Mark R. Saddler (msaddler@mit.edu)

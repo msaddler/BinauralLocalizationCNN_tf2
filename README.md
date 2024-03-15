@@ -30,9 +30,9 @@ tqdm                         4.65.0
     - Code tests comparing model weights and outputs between the `tensorflow-2.x` and `tensorflow-1.x` model implementations
 - [run_model_optimization.sh](run_model_optimization.sh) and [run_model.py](run_model.py) :
     - Example code for how to train or evaluate the model at scale on `tfrecords` files
-- [models/tensorflow2](models/tensorflow2) and [models/tensorflow2](models/tensorflow1) :
-    - Model directories containing config files with cochlear model parameters and optimization hyperparameters
-    - The 10 subdirectories contain the 10 convolutional neural network architectures
+- [models/tensorflow2](models/tensorflow2) and [models/tensorflow1](models/tensorflow1) :
+    - Model directories containing config files for each of the 10 convolutional neural network architectures
+    - Model directories for the `tensorflow-2.x` implementation also include config files with cochlear model parameters and optimization hyperparameters
     - Trained model weights can be downloaded from our [Google Drive](https://drive.google.com/drive/folders/1s9UC4DoksC7mTlxL2ZQFrn8XI0uJcsoV?usp=share_link)
 
 

@@ -104,48 +104,6 @@ def get_feature_description_from_tfrecord(filenames, compression_type='GZIP'):
     return feature_description
 
 
-def combine_tfrecords(list_fn_src,
-                      fn_dst,
-                      compression_type='GZIP',
-                      delete_src=False,
-                      verify=True,
-                      verbose=True):
-    """
-    Combines a list of source tfrecords files into a single
-    destination tfrecords file.
-    """
-    assert isinstance(list_fn_src, list), "list_fn_src must be a list"
-    assert fn_dst not in list_fn_src, "fn_dst cannot be in list_fn_src"
-    dataset_src = tf.data.TFRecordDataset(
-        list_fn_src,
-        compression_type=compression_type,
-        buffer_size=None,
-        num_parallel_reads=None)
-    writer = tf.data.experimental.TFRecordWriter(fn_dst, compression_type=compression_type)
-    if verbose:
-        print('[COMBINING] {} src files --> {}'.format(len(list_fn_src), fn_dst))
-    writer.write(dataset_src)
-    dataset_dst = tf.data.TFRecordDataset(
-        fn_dst,
-        compression_type=compression_type,
-        buffer_size=None,
-        num_parallel_reads=None)
-    if verbose:
-        print('[COMBINED] {}'.format(fn_dst))
-    if verify:
-        for example_src, example_dst in zip(dataset_src, dataset_dst):
-            if not example_src == example_dst:
-                raise ValueError("example_src and example_dst do not match")
-        if verbose:
-            print('[VERIFIED] {}'.format(fn_dst))
-    if delete_src:
-        for itr0, fn_src in enumerate(list_fn_src):
-            os.remove(fn_src)
-        if verbose:
-            print('[DELETED] {} src files'.format(len(list_fn_src)))
-    return fn_dst
-
-
 def get_dataset_from_tfrecords(filenames,
                                feature_description=None,
                                features_to_exclude=[],
@@ -330,40 +288,3 @@ def get_dataset_from_tfrecords(filenames,
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(buffer_size_prefetch)
     return dataset
-
-
-def dataset_ragged_to_fixed(example_ragged,
-                            key_ragged='signal_ragged_float32',
-                            key_fixed='signal',
-                            len_fixed=40000,
-                            kwargs_pad={}):
-    """
-    Helper function converts ragged example to fixed-length example.
-    """
-    if (key_fixed in example_ragged) and (example_ragged[key_fixed].shape[0] == len_fixed):
-        msg = "[dataset_ragged_to_fixed] example_ragged contains `{}` with length {} --> returned"
-        print(msg.format(key_fixed, len_fixed))
-        return example_ragged
-    signal_ragged = example_ragged[key_ragged]
-    signal_ragged = tf.cond(
-        tf.shape(signal_ragged)[0] >= len_fixed,
-        true_fn=lambda: signal_ragged,
-        false_fn=lambda: tf.pad(
-            signal_ragged,
-            paddings=[(0, len_fixed-tf.shape(signal_ragged)[0])],
-            **kwargs_pad))
-    maxval = tf.cast(tf.shape(signal_ragged)[0] - len_fixed, tf.int64)
-    idx0 = tf.cond(
-        maxval > 0,
-        true_fn=lambda: tf.random.uniform(
-            shape=(),
-            minval=0,
-            maxval=maxval,
-            dtype=tf.int64),
-        false_fn=lambda: maxval)
-    signal_fixed = signal_ragged[idx0:idx0 + len_fixed]
-    example_fixed = {key_fixed: signal_fixed}
-    for k in example_ragged.keys():
-        if 'ragged' not in k:
-            example_fixed[k] = example_ragged[k]
-    return example_fixed

@@ -27,9 +27,9 @@ declare -a list_model_dir=(
 model_dir=${list_model_dir[$job_idx]}
 echo $HOSTNAME $job_idx $model_dir
 
-# Specify locations of tfrecords files for training and validation dataset
-regex_train="/om2/scratch/*/msaddler/data_localize/dataset_localization/v01/train/sr10000_cf050_nst000_BW10eN1_cohc10eN1_cihc10eN1_IHC3000Hz_dbspl030to090/*tfrecords"
-regex_valid="/om2/scratch/*/msaddler/data_localize/dataset_localization/v01/valid/sr10000_cf050_nst000_BW10eN1_cohc10eN1_cihc10eN1_IHC3000Hz_dbspl030to090/*tfrecords"
+# Specify tfrecords for training and validation datasets
+regex_train="/om2/scratch/*/msaddler/data_localize/dataset_localization/v01/train/*IHC3000Hz_dbspl030to090/*tfrecords"
+regex_valid="/om2/scratch/*/msaddler/data_localize/dataset_localization/v01/valid/*IHC3000Hz_dbspl030to090/*tfrecords"
 
 # Set mixed_precision = 1 to enable mixed precision in tensorflow
 mixed_precision=0
